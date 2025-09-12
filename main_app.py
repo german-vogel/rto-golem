@@ -15,8 +15,11 @@ import platform
 import subprocess
 import pyperclip
 import spectrometry_analyzer
+import json
+import pickle
 
-# ------------------ PANEL DE IONES (SIDEBAR) -------------------
+
+#ions panel
 class IonSidebarPanel(tk.Toplevel):
     def __init__(self, parent, shot_ions_dict, on_update, *args, **kwargs):
         super().__init__(parent, *args, **kwargs)
@@ -30,23 +33,19 @@ class IonSidebarPanel(tk.Toplevel):
         self.cursor_lines = []
         self.last_cursor_x = None
 
-        # ---------- Canvas + Scrollbar -----------
         canvas = tk.Canvas(self, borderwidth=0)
         vscrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vscrollbar.set)
         vscrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
 
-        # --------- El contenido real va aquí ---------
         frame = tk.Frame(canvas)
         canvas.create_window((0, 0), window=frame, anchor="nw")
 
-        # --- Manejo de resizing para scroll
         def _on_frame_configure(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
         frame.bind("<Configure>", _on_frame_configure)
 
-        # --- Permitir scroll con rueda de mouse
         def _on_mouse_wheel(event):
             if event.delta:
                 canvas.yview_scroll(int(-1*(event.delta/120)), "units")
@@ -58,7 +57,6 @@ class IonSidebarPanel(tk.Toplevel):
         canvas.bind_all("<Button-4>", _on_mouse_wheel)
         canvas.bind_all("<Button-5>", _on_mouse_wheel)
 
-        # ---- Construcción del panel igual que antes ----
         title = tk.Label(frame, text="Panel de Iones por Disparo", font=("Arial", 12, "bold"))
         title.grid(row=0, column=0, columnspan=len(shot_ions_dict), sticky="w", pady=3)
 
@@ -108,36 +106,7 @@ class IonSidebarPanel(tk.Toplevel):
                 res[shot].append((ion, scale))
         return res
 
-
-# ------------------ DIALOGO FILTRO S-G -------------------
-class FilterConfigDialog(simpledialog.Dialog):
-    def __init__(self, parent, viewer):
-        self.viewer = viewer
-        super().__init__(parent, title="Configure Savitzky-Golay Filter")
-
-    def body(self, master):
-        tk.Label(master, text="Window Length (odd int):").grid(row=0, column=0, sticky="e")
-        tk.Label(master, text="Polynomial Order (< window):").grid(row=1, column=0, sticky="e")
-        self.window_entry = tk.Entry(master)
-        self.polyorder_entry = tk.Entry(master)
-        self.window_entry.insert(0, str(self.viewer.savgol_window))
-        self.polyorder_entry.insert(0, str(self.viewer.savgol_polyorder))
-        self.window_entry.grid(row=0, column=1)
-        self.polyorder_entry.grid(row=1, column=1)
-        return self.window_entry
-
-    def apply(self):
-        try:
-            window = int(self.window_entry.get())
-            polyorder = int(self.polyorder_entry.get())
-            if window % 2 == 0 or polyorder >= window:
-                raise ValueError
-            self.result = (window, polyorder)
-        except ValueError:
-            messagebox.showerror("Invalid Input", "Ensure window is odd and polyorder < window.")
-            self.result = None
-
-# ------------------ MAIN APP VIEWER -------------------
+#main app viewer
 class TokamakDataViewer:
     def __init__(self, root):
         self.root = root
@@ -149,16 +118,21 @@ class TokamakDataViewer:
         self.color_palette = ['#003f5c', '#7a5195', '#ef5675', '#ffa600']
 
         self.spec_peak_height = 50 
-        self.filter_enabled = False
         self.cursor_dynamics_enabled = False
-        self.savgol_window = 9
-        self.savgol_polyorder = 3
         self.image_refs = []
 
+        #appearance
         plt.rcParams.update({
             'font.size': 8, 'axes.labelsize': 8, 'xtick.labelsize': 8,
             'ytick.labelsize': 8, 'legend.fontsize': 'small',
-            'lines.linewidth': 1.2, 'axes.titlesize': 10
+            'lines.linewidth': 1.2, 'axes.titlesize': 10,
+            'figure.facecolor': 'white',  # figure background
+            'axes.facecolor': 'white',    # axes background
+            'axes.edgecolor': 'black',    # axes edges
+            'axes.linewidth': 0.8,        # axes lines thickness
+            'grid.color': 'lightgray',    # grid lines color
+            'grid.linestyle': '--',       # grid line style
+            'grid.linewidth': 0.5         # grid lines thickness
         })
 
         try:
@@ -175,10 +149,8 @@ class TokamakDataViewer:
         self.top_button_frame.pack(side=tk.TOP, fill=tk.X)
 
         tk.Button(self.top_button_frame, text="Load Shot", command=self.load_shot).pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Button(self.top_button_frame, text="Load Local Shot", command=self.load_local_shot).pack(side=tk.LEFT, padx=5, pady=5)
         tk.Button(self.top_button_frame, text="Clear Shots", command=self.clear_shots).pack(side=tk.LEFT, padx=5, pady=5)
-        self.filter_button = tk.Button(self.top_button_frame, text="Enable Savitzky-Golay", command=self.toggle_filter)
-        self.filter_button.pack(side=tk.LEFT, padx=5, pady=5)
-        tk.Button(self.top_button_frame, text="Configure Filter", command=self.configure_filter).pack(side=tk.LEFT, padx=5, pady=5)
         self.cursor_toggle_button = tk.Button(self.top_button_frame, text="Enable Cursor Dynamics", command=self.toggle_cursor_dynamics)
         self.cursor_toggle_button.pack(side=tk.LEFT, padx=5, pady=5)
         self.sidebar_button = tk.Button(self.top_button_frame, text="Mostrar Panel de Iones", command=self.show_ion_sidebar)
@@ -186,37 +158,32 @@ class TokamakDataViewer:
 
         self.plot_frame = tk.Frame(self.main_frame)
         self.plot_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        # --- Canvas + Toolbar in a dedicated container (Option 2)
-        # Create a dedicated container inside plot_frame
+
         self.canvas_container = tk.Frame(self.plot_frame)
         self.canvas_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Create the figure and the embedded canvas
-        self.fig, self.axs = plt.subplots(4, 2, figsize=(14, 12))
-
-        # Connect callback to rescale Y automatically when X-limits change (zoom/pan)
+        # create figure with white background
+        self.fig, self.axs = plt.subplots(4, 2, figsize=(14, 12), facecolor='white')
+        
+        # set facecolor for each axis
         for ax_row in self.axs:
             for ax in ax_row:
+                ax.set_facecolor('white')
                 ax.callbacks.connect('xlim_changed', self.on_xlim_changed)
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.canvas_container)
         canvas_widget = self.canvas.get_tk_widget()
 
-        # 1) Toolbar at the bottom of the container
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.canvas_container)
         self.toolbar.update()
         self.toolbar.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # 2) Canvas above, expandable
         canvas_widget.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # (Optional) extra label inside the toolbar
         self.data_box_label = tk.Label(self.toolbar, text="", anchor="w", justify="left", font=("Courier New", 8))
         self.data_box_label.pack(side=tk.LEFT, padx=10)
 
-        # (Optional) draw once
         self.canvas.draw()
-
 
         self.right_panel = tk.Frame(self.main_frame, bg='white')
         self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
@@ -227,86 +194,29 @@ class TokamakDataViewer:
 
         self.cursor_lines = []
 
-    # --------- FUNCIONES PRINCIPALES ---------
-    def show_ion_sidebar(self):
-        if not self.shot_ions_for_panel:
-            messagebox.showwarning("Sin datos", "Carga primero algún disparo para acceder al panel.")
-            return
-        if self.ion_sidebar_panel and tk.Toplevel.winfo_exists(self.ion_sidebar_panel):
-            self.ion_sidebar_panel.lift()
-            return
-        self.ion_sidebar_panel = IonSidebarPanel(self.root, self.shot_ions_for_panel, self.on_ion_panel_update)
-
-    def configure_filter(self):
-        dialog = FilterConfigDialog(self.root, self)
-        if dialog.result:
-            self.savgol_window, self.savgol_polyorder = dialog.result
-            if self.shots: self.plot_data()
-    
-    def toggle_filter(self):
-        self.filter_enabled = not self.filter_enabled
-        self.filter_button.config(text="Disable Savitzky-Golay" if self.filter_enabled else "Enable Savitzky-Golay")
-
-        xlims = []
-        for ax_row in self.axs:
-            row_limits = []
-            for ax in ax_row:
-                row_limits.append(ax.get_xlim())
-            xlims.append(row_limits)
-
-        if self.shots:
-           self.plot_data()
-
-        for i, ax_row in enumerate(self.axs):
-            for j, ax in enumerate(ax_row):
-                x_min, x_max = xlims[i][j]
-                ax.set_xlim(x_min, x_max)
-
-                y_vals = []
-                for line in ax.get_lines():
-                    xdata = np.asarray(line.get_xdata())
-                    ydata = np.asarray(line.get_ydata())
-                    if len(xdata) != len(ydata) or len(xdata) == 0:
-                        continue
-                    mask = (xdata >= x_min) & (xdata <= x_max)
-                    if np.any(mask):
-                        y_vals.extend(ydata[mask])
-                if y_vals:
-                    y_min = float(np.nanmin(y_vals))
-                    y_max = float(np.nanmax(y_vals))
-                    if np.isfinite(y_min) and np.isfinite(y_max) and y_max != y_min:
-                        ax.set_ylim(y_min * 0.9, y_max * 1.1)
-
-        if getattr(self, "cursor_dynamics_enabled", False) and not getattr(self, "cursor_lines", []):
-            fake_event = type('Event', (object,), {
-                'inaxes': self.axs[0][0],
-                'xdata': self.axs[0][0].get_xlim()[0]
-            })()
-            self.on_mouse_move(fake_event)
-
-        self.draw_cursor_at(getattr(self, 'last_cursor_x', None))
-
-        self.canvas.draw()
-
-
-    def apply_filter(self, y):
-        if self.filter_enabled and len(y) > self.savgol_window:
-            return signal.savgol_filter(y, window_length=self.savgol_window, polyorder=self.savgol_polyorder)
-        return y
-
+    #main functions
     def load_shot(self):
         shot_number = simpledialog.askinteger("Input", "Enter the shot number:", parent=self.root)
         if not shot_number: return
         try:
             local_folder = f"shot_{shot_number}"
             os.makedirs(local_folder, exist_ok=True)
+            
+            # Load basic data
             bt_data = self.load_data(f"http://golem.fjfi.cvut.cz/shots/{shot_number}/Diagnostics/BasicDiagnostics/Results/Bt.csv", f"{local_folder}/Bt.csv", ['time_ms', 'Bt'])
             ip_data = self.load_data(f"http://golem.fjfi.cvut.cz/shots/{shot_number}/Diagnostics/BasicDiagnostics/Results/Ip.csv", f"{local_folder}/Ip.csv", ['time_ms', 'Ip'])
             u_loop_data = self.load_data(f"http://golem.fjfi.cvut.cz/shots/{shot_number}/Diagnostics/BasicDiagnostics/Results/U_loop.csv", f"{local_folder}/U_loop.csv", ['time_ms', 'U_loop'])
             ne_data = self.load_data(f"http://golem.fjfi.cvut.cz/shots/{shot_number}/Diagnostics/Interferometry/ne_lav.csv", f"{local_folder}/ne.csv", ['time_ms', 'ne'])
+            
+            # Load fast camera data
             fast_camera_vertical_data = self.load_fast_camera_data(f"http://golem.fjfi.cvut.cz/shots/{shot_number}/Diagnostics/FastCameras/Camera_Vertical/CameraVerticalPosition", 'vertical_displacement')
             fast_camera_radial_data = self.load_fast_camera_data(f"http://golem.fjfi.cvut.cz/shots/{shot_number}/Diagnostics/FastCameras/Camera_Radial/CameraRadialPosition", 'radial_displacement')
+            
+            # Save fast camera data
+            fast_camera_vertical_data.to_csv(f"{local_folder}/fast_camera_vertical.csv", index=False)
+            fast_camera_radial_data.to_csv(f"{local_folder}/fast_camera_radial.csv", index=False)
 
+            # Calculate derived data
             combined_data = pd.merge(ip_data, u_loop_data, on='time_ms', how='outer')
             combined_data = pd.merge(combined_data, bt_data, on='time_ms', how='outer').interpolate().fillna(0)
             R0, a0, nu = 0.4, 0.085, 2
@@ -325,31 +235,69 @@ class TokamakDataViewer:
             combined_data['Te_avg_a'] = self.electron_temperature_Spitzer_eV(combined_data['eta_avg_a'], eps=combined_data['a']/combined_data['R'])
             te_data = combined_data[['time_ms', 'Te_0', 'Te_avg_a']]
             
+            # Save electron temperature data
+            te_data.to_csv(f"{local_folder}/Te.csv", index=False)
+            
+            # Calculate confinement time
             Ip_interp = interpolate.interp1d(ip_data['time_ms'], ip_data['Ip'], bounds_error=False, fill_value=np.nan)(ne_data['time_ms'])
             U_l_interp = interpolate.interp1d(u_loop_data['time_ms'], u_loop_data['U_loop'], bounds_error=False, fill_value=np.nan)(ne_data['time_ms'])
             valid_idx = (ne_data['ne'] > 0) & (Ip_interp > 0) & (U_l_interp > 0)
             tau = (1.0345 * ne_data['ne'][valid_idx]) / (16e19 * Ip_interp[valid_idx]**(1/3) * U_l_interp[valid_idx]**(5/3))
             confinement_time_data = pd.DataFrame({'time_ms': ne_data['time_ms'][valid_idx], 'tau': tau.values})
+            
+            # Save confinement time data
+            confinement_time_data.to_csv(f"{local_folder}/confinement_time.csv", index=False)
+            
+            # Process spectrometry data
             h5_file_path = spectrometry_analyzer.download_h5(shot_number)
             ion_labels, wls, intens = [], [], []
             t_spec_0 = self.find_plasma_formation_time(ip_data, threshold=0.01)
             print(f"Ip rises at t={t_spec_0:.2f} ms")
+            
             if h5_file_path and self.nist_df is not None:
                 ions, wls, intens = spectrometry_analyzer._detect_main_ions_for_panel(
                     h5_file_path, self.nist_df, peak_height=self.spec_peak_height)
                 ion_labels = ions
+            
+            # Save spectrometry metadata
             self.shot_ions_for_panel[shot_number] = list(zip(ion_labels, wls, intens))
-            self.shots[shot_number] = {
-                'Bt': bt_data, 'Ip': ip_data, 'U_loop': u_loop_data, 'ne': ne_data,
-                'fast_camera_vertical': fast_camera_vertical_data, 'fast_camera_radial': fast_camera_radial_data,
-                'Te': te_data, 'confinement_time': confinement_time_data, 'h5_path': h5_file_path,
-                'formation_time': t_spec_0
+            with open(f"{local_folder}/spectrometry_metadata.json", "w") as f:
+                json.dump(self.shot_ions_for_panel[shot_number], f)
+            
+            # Save all data to a combined pickle file for quick loading
+            shot_data = {
+                'Bt': bt_data, 
+                'Ip': ip_data, 
+                'U_loop': u_loop_data, 
+                'ne': ne_data,
+                'fast_camera_vertical': fast_camera_vertical_data, 
+                'fast_camera_radial': fast_camera_radial_data,
+                'Te': te_data, 
+                'confinement_time': confinement_time_data, 
+                'h5_path': h5_file_path,
+                'formation_time': t_spec_0,
+                'shot_ions': self.shot_ions_for_panel[shot_number]
             }
+            
+            with open(f"{local_folder}/shot_data.pkl", "wb") as f:
+                pickle.dump(shot_data, f)
+            
+            # Store in memory
+            self.shots[shot_number] = shot_data
             self.current_shot = shot_number
             self.plot_data()
             self.root.after(100, lambda: self.load_png_image(shot_number, local_folder))
         except Exception as e:
             messagebox.showerror("Error", f"Fallo al cargar el disparo {shot_number}: {e}")
+
+    def show_ion_sidebar(self):
+        if not self.shot_ions_for_panel:
+            messagebox.showwarning("Sin datos", "Carga primero algún disparo para acceder al panel.")
+            return
+        if self.ion_sidebar_panel and tk.Toplevel.winfo_exists(self.ion_sidebar_panel):
+            self.ion_sidebar_panel.lift()
+            return
+        self.ion_sidebar_panel = IonSidebarPanel(self.root, self.shot_ions_for_panel, self.on_ion_panel_update)
 
     def on_ion_panel_update(self):
         self.plot_data()
@@ -374,20 +322,21 @@ class TokamakDataViewer:
         for ax_row in self.axs:
             for ax in ax_row:
                 ax.clear()
+                ax.set_facecolor('white')  # Ensure white background for each axis
         color_cycle = itertools.cycle(self.color_palette)
         for shot, data in self.shots.items():
             color = next(color_cycle)
             lighter_color = self.lighter_color(color, 1.5)
-            self.axs[0, 0].plot(data['Bt']['time_ms'], self.apply_filter(data['Bt']['Bt']), label=f'Bt ({shot})', color=color)
-            self.axs[0, 1].plot(data['Ip']['time_ms'], self.apply_filter(data['Ip']['Ip']), label=f'Ip ({shot})', color=color)
-            self.axs[1, 0].plot(data['U_loop']['time_ms'], self.apply_filter(data['U_loop']['U_loop']), label=f'U_loop ({shot})', color=color)
-            self.axs[1, 1].plot(data['ne']['time_ms'], self.apply_filter(data['ne']['ne']), label=f'ne ({shot})', color=color)
-            self.axs[2, 0].plot(data['fast_camera_radial']['time_ms'], self.apply_filter(data['fast_camera_radial']['radial_displacement']), label=f'Δr ({shot})', color=color)
-            self.axs[2, 0].plot(data['fast_camera_vertical']['time_ms'], self.apply_filter(data['fast_camera_vertical']['vertical_displacement']), label=f'Δv ({shot})', color=lighter_color)
-            self.axs[2, 1].plot(data['Te']['time_ms'], self.apply_filter(data['Te']['Te_0']), label=f'Te_0 ({shot})', color=color)
-            self.axs[2, 1].plot(data['Te']['time_ms'], self.apply_filter(data['Te']['Te_avg_a']), label=f'Te_avg_a ({shot})', color=lighter_color, linestyle='--')
+            self.axs[0, 0].plot(data['Bt']['time_ms'], data['Bt']['Bt'], label=f'Bt ({shot})', color=color)
+            self.axs[0, 1].plot(data['Ip']['time_ms'], data['Ip']['Ip'], label=f'Ip ({shot})', color=color)
+            self.axs[1, 0].plot(data['U_loop']['time_ms'], data['U_loop']['U_loop'], label=f'U_loop ({shot})', color=color)
+            self.axs[1, 1].plot(data['ne']['time_ms'], data['ne']['ne'], label=f'ne ({shot})', color=color)
+            self.axs[2, 0].plot(data['fast_camera_radial']['time_ms'], data['fast_camera_radial']['radial_displacement'], label=f'Δr ({shot})', color=color)
+            self.axs[2, 0].plot(data['fast_camera_vertical']['time_ms'], data['fast_camera_vertical']['vertical_displacement'], label=f'Δv ({shot})', color=lighter_color)
+            self.axs[2, 1].plot(data['Te']['time_ms'], data['Te']['Te_0'], label=f'Te_0 ({shot})', color=color)
+            self.axs[2, 1].plot(data['Te']['time_ms'], data['Te']['Te_avg_a'], label=f'Te_avg_a ({shot})', color=lighter_color, linestyle='--')
             if not data['confinement_time'].empty:
-                self.axs[3, 0].plot(data['confinement_time']['time_ms'], self.apply_filter(data['confinement_time']['tau'] * 1e6), label=f'τ_e ({shot})', color=color)
+                self.axs[3, 0].plot(data['confinement_time']['time_ms'], data['confinement_time']['tau'] * 1e6, label=f'τ_e ({shot})', color=color)
             ax_spec = self.axs[3, 1]
             ions_scales_dict = {}
             if self.ion_sidebar_panel and tk.Toplevel.winfo_exists(self.ion_sidebar_panel):
@@ -406,7 +355,7 @@ class TokamakDataViewer:
                     formation_time=data.get('formation_time', 0.0)
                 )
             else:
-                ions_this_shot = [ion for ion,_,_ in self.shot_ions_for_panel.get(shot,[])]
+                ions_this_shot = [ion for ion,_,_ in data.get('shot_ions', [])]
                 spectrometry_analyzer.plot_ion_evolution_on_ax(
                     ax=ax_spec,
                     shot_number=shot,
@@ -422,7 +371,7 @@ class TokamakDataViewer:
             ax_spec.autoscale(axis="y")
             _, top = ax_spec.get_ylim()
             ax_spec.set_ylim(0, top)
-        labels = [['Bt [T]', 'Ip [kA]'], ['U_loop [V]', 'ne [m^-3]'], ['Desplazamiento [mm]', 'Te [eV]'], ['τ_e [μs]', '']]
+        labels = [['Bt [T]', 'Ip [kA]'], ['U_loop [V]', 'ne [m^-3]'], ['displacement [mm]', 'Te [eV]'], ['τ_e [μs]', 'intensity [a.u.]']]
         for i in range(4):
             for j in range(2):
                 ax = self.axs[i, j]
@@ -430,7 +379,7 @@ class TokamakDataViewer:
                 if i < 3:
                     ax.tick_params(axis='x', labelbottom=False)
                 else:
-                    ax.set_xlabel('Tiempo [ms]')
+                    ax.set_xlabel('time [ms]')
                 if ax.has_data():
                     if (i, j) == (3, 1):
                         ax.legend(fontsize='x-small', ncol=2)
@@ -442,7 +391,7 @@ class TokamakDataViewer:
         self.fig.tight_layout(pad=1.0)
         self.canvas.draw()
 
-    # --------- FUNCIONES AUXILIARES DE DATOS Y VISUAL ---------
+    #auxiliary functions
     def clear_shots(self):
         h5_paths_to_remove = {data['h5_path'] for data in self.shots.values() if data.get('h5_path') and os.path.exists(data['h5_path'])}
         for path in h5_paths_to_remove:
@@ -565,7 +514,6 @@ class TokamakDataViewer:
                 self.data_box_label.config(text="")
             self.disconnect_cursor_events()
         self.canvas.draw()
-
     
     def on_mouse_move(self, event):
         if not event.inaxes or not self.cursor_dynamics_enabled:
@@ -676,7 +624,8 @@ class TokamakDataViewer:
         b = min(255, int(b * factor))
         return f"#{r:02x}{g:02x}{b:02x}"
     
-    
+    #find plasma formation time (from Ip rise) - modify threshold as needed
+    #used for impurity intesities time evolution t=0
     def find_plasma_formation_time(self, ip_data, threshold=0.01):
         """
         Find the time when Ip starts to rise significantly.
@@ -688,20 +637,100 @@ class TokamakDataViewer:
         ip_values = ip_data['Ip'].values
         time_values = ip_data['time_ms'].values
     
-        # Find maximum Ip and threshold value (5% of max)
         max_ip = np.max(ip_values)
         threshold_value = max_ip * threshold
-    
-        # Find the first time Ip exceeds the threshold
+
         above_threshold = np.where(ip_values > threshold_value)[0]
         if len(above_threshold) > 0:
             t_spec_0 = time_values[above_threshold[0]]
             return t_spec_0
     
-        return 0.0  # Fallback if not found
+        return 0.0 
 
-# --------- LAUNCHER ---------
+    def load_local_shot(self):
+        shot_number = simpledialog.askinteger("Input", "Enter the shot number to load from local storage:", parent=self.root)
+        if not shot_number: return
+        
+        local_folder = f"shot_{shot_number}"
+        if not os.path.exists(local_folder):
+            messagebox.showerror("Error", f"No local data found for shot {shot_number}")
+            return
+        
+        try:
+            # Try to load from pickle file first
+            pickle_path = f"{local_folder}/shot_data.pkl"
+            if os.path.exists(pickle_path):
+                with open(pickle_path, "rb") as f:
+                    shot_data = pickle.load(f)
+                
+                self.shots[shot_number] = shot_data
+                self.current_shot = shot_number
+                
+                # Load spectrometry metadata
+                metadata_path = f"{local_folder}/spectrometry_metadata.json"
+                if os.path.exists(metadata_path):
+                    with open(metadata_path, "r") as f:
+                        self.shot_ions_for_panel[shot_number] = json.load(f)
+                
+                self.plot_data()
+                self.root.after(100, lambda: self.load_png_image(shot_number, local_folder))
+            else:
+                # Fall back to loading individual CSV files
+                bt_data = pd.read_csv(f"{local_folder}/Bt.csv")
+                ip_data = pd.read_csv(f"{local_folder}/Ip.csv")
+                u_loop_data = pd.read_csv(f"{local_folder}/U_loop.csv")
+                ne_data = pd.read_csv(f"{local_folder}/ne.csv")
+                fast_camera_vertical_data = pd.read_csv(f"{local_folder}/fast_camera_vertical.csv")
+                fast_camera_radial_data = pd.read_csv(f"{local_folder}/fast_camera_radial.csv")
+                te_data = pd.read_csv(f"{local_folder}/Te.csv")
+                confinement_time_data = pd.read_csv(f"{local_folder}/confinement_time.csv")
+                
+                # Load spectrometry metadata
+                metadata_path = f"{local_folder}/spectrometry_metadata.json"
+                if os.path.exists(metadata_path):
+                    with open(metadata_path, "r") as f:
+                        self.shot_ions_for_panel[shot_number] = json.load(f)
+                
+                shot_data = {
+                    'Bt': bt_data, 
+                    'Ip': ip_data, 
+                    'U_loop': u_loop_data, 
+                    'ne': ne_data,
+                    'fast_camera_vertical': fast_camera_vertical_data, 
+                    'fast_camera_radial': fast_camera_radial_data,
+                    'Te': te_data, 
+                    'confinement_time': confinement_time_data, 
+                    'h5_path': None,  # Not available locally
+                    'formation_time': self.find_plasma_formation_time(ip_data, threshold=0.01),
+                    'shot_ions': self.shot_ions_for_panel.get(shot_number, [])
+                }
+                
+                self.shots[shot_number] = shot_data
+                self.current_shot = shot_number
+                self.plot_data()
+                self.root.after(100, lambda: self.load_png_image(shot_number, local_folder))
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Fallo al cargar el disparo local {shot_number}: {e}")
+
+#launcher (with DPI fix for resolution)
 if __name__ == "__main__":
+    # Windows DPI awareness fix - MUST be first and use this exact code
+    import ctypes
+    try:
+        # Windows 8.1 and above
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Try value 2 instead of 1
+    except:
+        try:
+            # Windows 8 and below
+            ctypes.windll.user32.SetProcessDPIAware()
+        except:
+            pass
+    
     root = tk.Tk()
+    
+    # scaling fix for high DPI displays
+    root.tk.call('tk', 'scaling', 2.0)  # increase value if pixelated
+    
     app = TokamakDataViewer(root)
     root.mainloop()
