@@ -1,8 +1,9 @@
 # requirements.txt
-pandas
-matplotlib
-scipy
-numpy
-requests
-Pillow
-h5py
+pandas		  2.2.3
+matplotlib	3.10.0
+scipy	    	1.15.2
+numpy	    	1.26.4
+requests	  2.31.0
+h5py		    3.12.1
+json		    2.0.9
+pyperclip	  1.9.0
