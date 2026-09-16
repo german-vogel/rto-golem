@@ -314,9 +314,6 @@ class TokamakDataViewer:
             bt_data = self.load_data(f"http://golem.fjfi.cvut.cz/shots/{shot_number}/Diagnostics/BasicDiagnostics/Results/Bt.csv", f"{local_folder}/Bt.csv", ['time_ms', 'Bt'])
             ip_data = self.load_data(f"http://golem.fjfi.cvut.cz/shots/{shot_number}/Diagnostics/BasicDiagnostics/Results/Ip.csv", f"{local_folder}/Ip.csv", ['time_ms', 'Ip'])
             u_loop_data = self.load_data(f"http://golem.fjfi.cvut.cz/shots/{shot_number}/Diagnostics/BasicDiagnostics/Results/U_loop.csv", f"{local_folder}/U_loop.csv", ['time_ms', 'U_loop'])
-            
-            t_spec_0 = self.find_plasma_formation_time(ip_data, threshold=0.03)
-            end_time = self.find_plasma_end_time(ip_data, threshold=0.50)
 
             # OPTIMIZATION: Conditionally request/load other datasets only if active
             ne_data = pd.DataFrame(columns=['time_ms', 'ne'])
@@ -389,8 +386,7 @@ class TokamakDataViewer:
             shot_data = {
                 'Bt': bt_data, 'Ip': ip_data, 'U_loop': u_loop_data, 'ne': ne_data,
                 'fast_camera_vertical': fast_camera_vertical_data, 'fast_camera_radial': fast_camera_radial_data,
-                'Te': te_data, 'confinement_time': confinement_time_data, 'h5_path': h5_file_path,
-                'formation_time': t_spec_0, 'end_time': end_time, 'shot_ions': shot_ions
+                'Te': te_data, 'confinement_time': confinement_time_data, 'h5_path': h5_file_path, 'shot_ions': shot_ions
             }
             
             with open(f"{local_folder}/shot_data.pkl", "wb") as f:
@@ -486,18 +482,14 @@ class TokamakDataViewer:
                             ax=ax, shot_number=shot, shot_color=color, h5_path=data.get('h5_path'),
                             nist_df=self.nist_df, peak_height=self.spec_peak_height,
                             ions_to_plot=[ion for ion, _ in ions_scales_dict],
-                            scaling_dict={ion: scale for ion, scale in ions_scales_dict},
-                            formation_time=data.get('formation_time', 0.0),
-                            end_time=data.get('end_time', float('inf'))
+                            scaling_dict={ion: scale for ion, scale in ions_scales_dict}
                         )
                     else:
                         ions_this_shot = [ion for ion,_,_ in data.get('shot_ions', [])][:5]
                         spectrometry_analyzer.plot_ion_evolution_on_ax(
                             ax=ax, shot_number=shot, shot_color=color, h5_path=data.get('h5_path'),
                             nist_df=self.nist_df, peak_height=self.spec_peak_height,
-                            ions_to_plot=ions_this_shot, scaling_dict={ion:1.0 for ion in ions_this_shot},
-                            formation_time=data.get('formation_time', 0.0),
-                            end_time=data.get('end_time', float('inf'))
+                            ions_to_plot=ions_this_shot, scaling_dict={ion:1.0 for ion in ions_this_shot}
                         )
                     ax.relim()
                     ax.autoscale(axis="y")
@@ -796,42 +788,6 @@ class TokamakDataViewer:
         b = min(255, int(b * factor))
         return f"#{r:02x}{g:02x}{b:02x}"
     
-    def find_plasma_formation_time(self, ip_data, threshold=0.03):
-        if ip_data.empty or 'Ip' not in ip_data.columns:
-            return 0.0
-        ip_values = ip_data['Ip'].values
-        time_values = ip_data['time_ms'].values
-        max_ip = np.max(ip_values)
-        if max_ip <= 0.2: 
-            return 0.0
-        idx_max_ip = np.argmax(ip_values)
-        umbral_start = max_ip * threshold
-        y_ip_subida = ip_values[:idx_max_ip]
-        indices_apagado = np.where(y_ip_subida < umbral_start)[0]
-        if len(indices_apagado) == 0:
-            return 0.0
-        idx_start = indices_apagado[-1] + 1
-        if idx_start < len(time_values):
-            return time_values[idx_start]
-        return 0.0 
-
-    def find_plasma_end_time(self, ip_data, threshold=0.50):
-        if ip_data.empty or 'Ip' not in ip_data.columns:
-            return float('inf')
-        ip_values = ip_data['Ip'].values
-        time_values = ip_data['time_ms'].values
-        max_ip = np.max(ip_values)
-        if max_ip <= 0.2:
-            return float('inf')
-        idx_max_ip = np.argmax(ip_values)
-        umbral_end = max_ip * threshold
-        ip_post_pico = ip_values[idx_max_ip:]
-        t_ip_post_pico = time_values[idx_max_ip:]
-        indices_end = np.where(ip_post_pico < umbral_end)[0]
-        if len(indices_end) > 0:
-            return t_ip_post_pico[indices_end[0]] + 1.0
-        else:
-            return t_ip_post_pico[-1] if len(t_ip_post_pico) > 0 else float('inf')
 
     def load_local_shot(self):
         shot_number = simpledialog.askinteger("Input", "Enter the shot number to load from local storage:", parent=self.root)
@@ -870,8 +826,6 @@ class TokamakDataViewer:
                     'Bt': bt_data, 'Ip': ip_data, 'U_loop': u_loop_data, 'ne': ne_data,
                     'fast_camera_vertical': fast_camera_vertical_data, 'fast_camera_radial': fast_camera_radial_data,
                     'Te': te_data, 'confinement_time': confinement_time_data, 'h5_path': None,
-                    'formation_time': self.find_plasma_formation_time(ip_data, threshold=0.03),
-                    'end_time': self.find_plasma_end_time(ip_data, threshold=0.50),
                     'shot_ions': self.shot_ions_for_panel.get(shot_number, [])
                 }
                 self.shots[shot_number] = shot_data

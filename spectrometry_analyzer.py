@@ -399,7 +399,7 @@ def get_spectrometer_integration_time(shot_no):
 
 
 def plot_ion_evolution_on_ax(ax, shot_number, shot_color, h5_path, nist_df, peak_height, 
-                           ions_to_plot=None, scaling_dict=None, formation_time=0.0, end_time=float('inf')):
+                           ions_to_plot=None, scaling_dict=None):
     ax.set_xlabel("Tiempo [ms]")
     ax.set_ylabel("Intensidad (A.U.)")
     ax.grid(True, which='both', linestyle='--', linewidth=0.5)
